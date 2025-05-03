@@ -1,7 +1,7 @@
 // game.js
 
 // --- Get DOM Elements ---
-// It's good practice to get these once at the start
+// (Keep these as they are)
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 const gameContainer = document.getElementById('gameContainer');
@@ -19,7 +19,8 @@ const GAME_TIME_LIMIT = 60; // seconds
 
 // --- Physics Constants ---
 const GRAVITY = 0.4;
-const PUSH_FORCE = -9.5;
+const PUSH_FORCE = -9.0; // Adjusted vertical push for tap mechanic
+const HORIZONTAL_PUSH_SPEED = 5.5; // NEW: Speed applied horizontally on tap
 const HORIZONTAL_DAMPING = 0.995;
 const BOUNCE_FACTOR_GROUND = 0.6;
 const BOUNCE_FACTOR_WALL = 0.8;
@@ -35,7 +36,7 @@ let ball = {
     x: GAME_WIDTH / 4,
     y: GAME_HEIGHT / 2,
     radius: 15,
-    vx: 4,
+    vx: 0, // Start with no horizontal velocity until first tap
     vy: 0,
     angle: 0,
     angularVelocity: 0,
@@ -63,10 +64,11 @@ let score = 0;
 let timeLeft = GAME_TIME_LIMIT;
 let timerInterval = null;
 let gameState = 'start'; // 'start', 'playing', 'gameOver'
-let isMouseDown = false;
+// let isMouseDown = false; // REMOVED
+let justClicked = false; // NEW: Flag for single tap event
 let canScore = true;
 let hitRimOrBackboard = false;
-let lastTime = 0; // Moved here for broader scope if needed outside loop
+let lastTime = 0;
 
 // --- Net Animation State ---
 let isNetAnimating = false;
@@ -79,7 +81,6 @@ const NET_PULL_Y_FACTOR = 0.2;
 function initGame() {
     canvas.width = GAME_WIDTH;
     canvas.height = GAME_HEIGHT;
-    // Set container size dynamically via JS if needed, or keep fixed in CSS
     gameContainer.style.width = `${GAME_WIDTH}px`;
     gameContainer.style.height = `${GAME_HEIGHT}px`;
     resetGame();
@@ -89,22 +90,23 @@ function resetGame() {
     score = 0;
     timeLeft = GAME_TIME_LIMIT;
     gameState = 'start';
-    isMouseDown = false;
+    // isMouseDown = false; // REMOVED
+    justClicked = false; // Reset click flag
     canScore = true;
     hitRimOrBackboard = false;
     isNetAnimating = false;
     netAnimationProgress = 0;
-    lastTime = 0; // Reset lastTime
+    lastTime = 0;
 
     ball.x = GAME_WIDTH / 4;
-    ball.y = GAME_HEIGHT / 2;
-    ball.vx = 4 + Math.random() * 2;
+    ball.y = GAME_HEIGHT / 1.5; // Start lower
+    ball.vx = 0; // Start stationary horizontally
     ball.vy = 0;
     ball.angle = 0;
-    ball.angularVelocity = (Math.random() - 0.5) * 0.1;
+    ball.angularVelocity = 0; // No initial spin
 
     hoop.x = GAME_WIDTH * 0.75;
-    hoop.vx = Math.abs(hoop.vx) * (Math.random() > 0.5 ? 1 : -1);
+    hoop.vx = Math.abs(hoop.vx) * (Math.random() > 0.5 ? 1 : -1); // Random initial direction
 
     scoreDisplay.textContent = `Score: ${score}`;
     timerDisplay.textContent = `Time: ${timeLeft}`;
@@ -126,15 +128,16 @@ function resetGame() {
 // --- Game Loop ---
 function gameLoop(timestamp) {
     if (!lastTime) lastTime = timestamp;
-    const deltaTime = (timestamp - lastTime) / (1000 / 60); // Normalize to 60 FPS
+    const deltaTime = (timestamp - lastTime) / (1000 / 60);
     lastTime = timestamp;
 
     if (gameState !== 'playing') {
+        // (Keep drawing logic as is)
         clearCanvas();
         drawCourt();
-        drawHoop(); // Keep drawing hoop with potential animation ending
-        drawBall(); // Keep drawing ball in its final position
-        if (isNetAnimating) updateNetAnimation(deltaTime); // Let net animation finish
+        drawHoop();
+        drawBall();
+        if (isNetAnimating) updateNetAnimation(deltaTime);
         if (gameState === 'gameOver') {
             messageOverlay.style.display = 'block';
         }
@@ -150,11 +153,26 @@ function gameLoop(timestamp) {
 
 // --- Update Logic ---
 function update(deltaTime) {
-    // Apply Input Force
-    if (isMouseDown) {
-        ball.vy = PUSH_FORCE;
+
+    // --- Apply Input Force (Tap Mechanic) ---
+    if (justClicked) {
+        ball.vy = PUSH_FORCE; // Apply vertical impulse
+
+        // Apply horizontal impulse based on hoop's current direction
+        let direction = Math.sign(hoop.vx);
+        // Handle case where hoop might be momentarily stationary (or if vx is 0)
+        if (direction === 0) {
+            direction = (Math.random() < 0.5) ? -1 : 1; // Assign random direction if hoop stopped
+        }
+        ball.vx = HORIZONTAL_PUSH_SPEED * direction;
+
+        // Optional: Add a small random spin on tap?
+        // ball.angularVelocity += (Math.random() - 0.5) * 0.1;
+
+        justClicked = false; // Consume the click/tap for this update cycle
     }
 
+    // --- Physics ---
     // Apply Gravity
     ball.vy += GRAVITY * deltaTime;
 
@@ -165,15 +183,15 @@ function update(deltaTime) {
     // Update Angle based on Angular Velocity
     ball.angle += ball.angularVelocity * deltaTime;
 
-    // Apply Damping
-    ball.vx *= Math.pow(HORIZONTAL_DAMPING, deltaTime);
+    // Apply Damping (Only horizontal damping might be needed now)
+    ball.vx *= Math.pow(HORIZONTAL_DAMPING, deltaTime); // Keep horizontal damping
     ball.angularVelocity *= Math.pow(ANGULAR_DAMPING, deltaTime);
 
     // Update Hoop Position
     hoop.x += hoop.vx * deltaTime;
     if (hoop.x + hoop.width / 2 > GAME_WIDTH - hoop.backboardWidth || hoop.x - hoop.width / 2 < 0) {
         hoop.vx *= -1;
-        hoop.x += hoop.vx * deltaTime; // Prevent sticking
+        hoop.x += hoop.vx * deltaTime;
     }
 
     // Update Net Animation
@@ -182,7 +200,7 @@ function update(deltaTime) {
     }
 
     // Collision Detection
-    hitRimOrBackboard = false; // Reset before checks
+    hitRimOrBackboard = false;
     handleCollisions(deltaTime);
 
     // Scoring Check
@@ -198,6 +216,7 @@ function updateNetAnimation(deltaTime) {
 }
 
 // --- Collision Handling ---
+// (Keep handleCollisions function as is)
 function handleCollisions(deltaTime) {
     // Ground Collision
     if (ball.y + ball.radius > GAME_HEIGHT) {
@@ -206,7 +225,7 @@ function handleCollisions(deltaTime) {
         ball.vy *= -BOUNCE_FACTOR_GROUND;
         ball.vx += ball.angularVelocity * SPIN_EFFECT_ON_BOUNCE * Math.abs(incomingVy) * deltaTime;
         ball.angularVelocity *= SPIN_DAMPING_ON_BOUNCE;
-        ball.vx *= BOUNCE_FACTOR_GROUND;
+        ball.vx *= BOUNCE_FACTOR_GROUND; // Ground friction still useful
         canScore = true;
     }
 
@@ -224,11 +243,12 @@ function handleCollisions(deltaTime) {
     if (ball.x + ball.radius > GAME_WIDTH || ball.x - ball.radius < 0) {
         const hitRightWall = ball.x + ball.radius > GAME_WIDTH;
         ball.x = hitRightWall ? GAME_WIDTH - ball.radius : ball.radius;
+        // Stop horizontal movement on wall hit? Or bounce? Bounce feels better.
         ball.vx *= -BOUNCE_FACTOR_WALL;
-        ball.angularVelocity *= SPIN_DAMPING_ON_BOUNCE;
+        ball.angularVelocity *= SPIN_DAMPING_ON_BOUNCE; // Dampen spin too
     }
 
-    // Hoop Collisions
+    // Hoop Collisions (Keep as is)
     const hoopTopY = hoop.y;
     const hoopBottomY = hoop.y + hoop.rimThickness;
     const hoopCenterX = hoop.x;
@@ -239,7 +259,7 @@ function handleCollisions(deltaTime) {
     const backboardTopY = hoop.y - hoop.backboardHeight / 2 + hoop.rimThickness / 2;
     const backboardBottomY = hoop.y + hoop.backboardHeight / 2 + hoop.rimThickness / 2;
 
-    // 1. Backboard Collision
+    // 1. Backboard Collision (Keep as is)
     if (ball.x + ball.radius > backboardLeftX &&
         ball.x - ball.radius < backboardRightX &&
         ball.y + ball.radius > backboardTopY &&
@@ -256,7 +276,7 @@ function handleCollisions(deltaTime) {
         }
     }
 
-    // 2. Rim Collision
+    // 2. Rim Collision (Keep as is)
     const checkRimCollision = (rimX) => {
         if (Math.abs(ball.x - rimX) < ball.radius + hoop.rimThickness) {
             if (ball.y > hoopTopY - ball.radius && ball.y < hoopBottomY + ball.radius) {
@@ -270,19 +290,22 @@ function handleCollisions(deltaTime) {
                     canScore = true;
                     const incomingVy = ball.vy;
 
-                    if (ball.y < hoopTopY + hoop.rimThickness) {
+                    if (ball.y < hoopTopY + hoop.rimThickness) { // Hit from above
                         ball.vy *= -BOUNCE_FACTOR_RIM;
-                        ball.y = hoopTopY - ball.radius;
-                    } else {
-                        ball.vx *= -BOUNCE_FACTOR_RIM * 0.7;
-                        ball.x += (ball.x > hoopCenterX ? 1 : -1) * 2;
-                        if(ball.vy > 0) ball.vy *= -0.1;
+                        ball.y = hoopTopY - ball.radius; // Adjust position slightly
+                    } else { // Hit from side/below (less common physics needed)
+                        // Keep horizontal bounce minimal if hit from side/below
+                        // ball.vx *= -BOUNCE_FACTOR_RIM * 0.7; // Maybe remove/reduce this
+                        ball.x += (ball.x > hoopCenterX ? 1 : -1) * 1; // Slight push away
+                        if(ball.vy > 0) ball.vy *= -0.1; // Nudge up if hit below
                     }
 
+                    // Apply spin based on hit location (Keep as is)
                     const hitOffset = (ball.x - rimX);
                     const spinDirection = (rimX < hoopCenterX) ? 1 : -1;
                     ball.angularVelocity += spinDirection * SPIN_ON_RIM_HIT * (1 - Math.abs(hitOffset) / ball.radius) * deltaTime;
-                    ball.vx += ball.angularVelocity * SPIN_EFFECT_ON_BOUNCE * Math.abs(incomingVy) * 0.5 * deltaTime;
+                    // Spin effect on bounce (Keep as is)
+                    // ball.vx += ball.angularVelocity * SPIN_EFFECT_ON_BOUNCE * Math.abs(incomingVy) * 0.5 * deltaTime; // Maybe reduce this interaction
                     ball.angularVelocity *= SPIN_DAMPING_ON_BOUNCE * 0.9;
 
                     return true;
@@ -298,6 +321,7 @@ function handleCollisions(deltaTime) {
 
 
 // --- Scoring Logic ---
+// (Keep checkScoring function as is)
 function checkScoring() {
     const hoopTopY = hoop.y;
     const hoopBottomY = hoop.y + hoop.scoreZoneHeight;
@@ -305,12 +329,13 @@ function checkScoring() {
     const hoopRightRimX = hoop.x + hoop.width / 2;
 
     if (canScore && ball.vy > 0 &&
-        ball.y - ball.radius < hoopBottomY &&
-        ball.y + ball.radius > hoopTopY &&
+        ball.y - ball.radius < hoopBottomY && // Check top edge hasn't passed bottom zone yet
+        ball.y + ball.radius > hoopTopY && // Check bottom edge has passed top of rim
         ball.x > hoopLeftRimX && ball.x < hoopRightRimX)
     {
-        const prevY = ball.y - ball.vy; // Simple check based on current velocity
-        if (prevY <= hoopTopY + hoop.rimThickness / 2) {
+        // More reliable check: Ball center crossed the rim line in this frame
+         const prevY = ball.y - ball.vy; // Position in previous frame (approx)
+         if (prevY <= hoopTopY + hoop.rimThickness / 2 && ball.y > hoopTopY + hoop.rimThickness / 2) {
              const points = hitRimOrBackboard ? 2 : 3;
              score += points;
              scoreDisplay.textContent = `Score: ${score}`;
@@ -320,9 +345,11 @@ function checkScoring() {
          }
     }
 
-    if (!canScore && ball.y < hoop.y - 100) {
+    // Reset canScore if the ball goes significantly above the hoop OR hits ground
+    if (!canScore && ball.y < hoop.y - 150) { // Reset higher above hoop
          canScore = true;
     }
+    // Also handled in ground collision now
 }
 
 function triggerNetAnimation() {
@@ -331,124 +358,22 @@ function triggerNetAnimation() {
  }
 
 // --- Drawing ---
-function clearCanvas() {
-    ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-}
-
-function drawCourt() {
-    ctx.fillStyle = '#d2b48c';
-    ctx.fillRect(0, GAME_HEIGHT - 20, GAME_WIDTH, 20);
-}
-
-function drawBall() {
-    ctx.save();
-    ctx.translate(ball.x, ball.y);
-    ctx.rotate(ball.angle);
-    ctx.translate(-ball.x, -ball.y);
-
-    ctx.beginPath();
-    ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
-    ctx.fillStyle = ball.color;
-    ctx.fill();
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.closePath();
-
-     // Draw rotating lines
-     ctx.beginPath();
-     ctx.moveTo(ball.x, ball.y - ball.radius);
-     ctx.lineTo(ball.x, ball.y + ball.radius);
-     ctx.moveTo(ball.x - ball.radius, ball.y);
-     ctx.lineTo(ball.x + ball.radius, ball.y);
-     ctx.moveTo(ball.x - ball.radius * 0.7, ball.y - ball.radius * 0.7);
-     ctx.bezierCurveTo(ball.x - ball.radius * 0.3, ball.y + ball.radius * 0.1, ball.x + ball.radius * 0.3, ball.y + ball.radius * 0.1, ball.x + ball.radius * 0.7, ball.y - ball.radius * 0.7);
-     ctx.moveTo(ball.x - ball.radius * 0.7, ball.y + ball.radius * 0.7);
-     ctx.bezierCurveTo(ball.x - ball.radius * 0.3, ball.y - ball.radius * 0.1, ball.x + ball.radius * 0.3, ball.y - ball.radius * 0.1, ball.x + ball.radius * 0.7, ball.y + ball.radius * 0.7);
-     ctx.strokeStyle = '#00000088';
-     ctx.lineWidth = 1;
-     ctx.stroke();
-     ctx.closePath();
-
-    ctx.restore();
-}
-
-function drawHoop() {
-    const hoopTopY = hoop.y;
-    const hoopBottomY = hoop.y + hoop.rimThickness;
-    const hoopLeftRimX = hoop.x - hoop.width / 2;
-    const hoopRightRimX = hoop.x + hoop.width / 2;
-
-    // Backboard
-    const backboardLeftX = hoopRightRimX;
-    const backboardTopY = hoop.y - hoop.backboardHeight / 2 + hoop.rimThickness / 2;
-     ctx.fillStyle = hoop.backboardColor;
-     ctx.fillRect(backboardLeftX, backboardTopY, hoop.backboardWidth, hoop.backboardHeight);
-     ctx.strokeStyle = '#999';
-     ctx.strokeRect(backboardLeftX, backboardTopY, hoop.backboardWidth, hoop.backboardHeight);
-
-    // Net (with Animation)
-    let netBottomY = hoopBottomY + hoop.netHeight;
-    let netBottomPullX = hoop.width * 0.2;
-
-    if (isNetAnimating) {
-        const animFactor = Math.sin(netAnimationProgress * Math.PI);
-        netBottomPullX += hoop.width * NET_PULL_X_FACTOR * animFactor;
-        netBottomY += hoop.netHeight * NET_PULL_Y_FACTOR * animFactor;
-    }
-
-    const netBottomLeftX = hoopLeftRimX + netBottomPullX;
-    const netBottomRightX = hoopRightRimX - netBottomPullX;
-
-    ctx.beginPath();
-    ctx.moveTo(hoopLeftRimX, hoopBottomY);
-    ctx.lineTo(netBottomLeftX, netBottomY);
-    ctx.lineTo(netBottomRightX, netBottomY);
-    ctx.lineTo(hoopRightRimX, hoopBottomY);
-    ctx.strokeStyle = hoop.netColor;
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-     // Vertical net lines
-     for(let i = 0.2; i < 0.81; i += 0.2) {
-         const bottomX = netBottomLeftX + (netBottomRightX - netBottomLeftX) * (i / 0.6 - (0.2 / 0.6));
-         ctx.moveTo(hoopLeftRimX + hoop.width * i, hoopBottomY);
-         ctx.lineTo(bottomX, netBottomY);
-         ctx.stroke();
-     }
-
-    // Rim
-    ctx.fillStyle = hoop.rimColor;
-    ctx.fillRect(hoopLeftRimX - hoop.rimThickness / 2, hoopTopY, hoop.width + hoop.rimThickness, hoop.rimThickness);
-     ctx.strokeStyle = '#a00';
-     ctx.lineWidth = 1;
-     ctx.strokeRect(hoopLeftRimX - hoop.rimThickness / 2, hoopTopY, hoop.width + hoop.rimThickness, hoop.rimThickness);
-}
-
-function draw() {
-    clearCanvas();
-    drawCourt();
-    drawHoop();
-    drawBall();
-}
+// (Keep drawing functions as is: clearCanvas, drawCourt, drawBall, drawHoop, draw)
+function clearCanvas() { ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT); }
+function drawCourt() { ctx.fillStyle = '#d2b48c'; ctx.fillRect(0, GAME_HEIGHT - 20, GAME_WIDTH, 20); }
+function drawBall() { /* ... Keep existing rotation draw code ... */ ctx.save(); ctx.translate(ball.x, ball.y); ctx.rotate(ball.angle); ctx.translate(-ball.x, -ball.y); ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2); ctx.fillStyle = ball.color; ctx.fill(); ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.stroke(); ctx.closePath(); ctx.beginPath(); ctx.moveTo(ball.x, ball.y - ball.radius); ctx.lineTo(ball.x, ball.y + ball.radius); ctx.moveTo(ball.x - ball.radius, ball.y); ctx.lineTo(ball.x + ball.radius, ball.y); ctx.moveTo(ball.x - ball.radius * 0.7, ball.y - ball.radius * 0.7); ctx.bezierCurveTo(ball.x - ball.radius * 0.3, ball.y + ball.radius * 0.1, ball.x + ball.radius * 0.3, ball.y + ball.radius * 0.1, ball.x + ball.radius * 0.7, ball.y - ball.radius * 0.7); ctx.moveTo(ball.x - ball.radius * 0.7, ball.y + ball.radius * 0.7); ctx.bezierCurveTo(ball.x - ball.radius * 0.3, ball.y - ball.radius * 0.1, ball.x + ball.radius * 0.3, ball.y - ball.radius * 0.1, ball.x + ball.radius * 0.7, ball.y + ball.radius * 0.7); ctx.strokeStyle = '#00000088'; ctx.lineWidth = 1; ctx.stroke(); ctx.closePath(); ctx.restore(); }
+function drawHoop() { /* ... Keep existing hoop and net animation draw code ... */ const hoopTopY=hoop.y; const hoopBottomY=hoop.y+hoop.rimThickness; const hoopLeftRimX=hoop.x-hoop.width/2; const hoopRightRimX=hoop.x+hoop.width/2; const backboardLeftX=hoopRightRimX; const backboardTopY=hoop.y-hoop.backboardHeight/2+hoop.rimThickness/2; ctx.fillStyle=hoop.backboardColor; ctx.fillRect(backboardLeftX,backboardTopY,hoop.backboardWidth,hoop.backboardHeight); ctx.strokeStyle='#999'; ctx.strokeRect(backboardLeftX,backboardTopY,hoop.backboardWidth,hoop.backboardHeight); let netBottomY=hoopBottomY+hoop.netHeight; let netBottomPullX=hoop.width*0.2; if(isNetAnimating){ const animFactor=Math.sin(netAnimationProgress*Math.PI); netBottomPullX+=hoop.width*NET_PULL_X_FACTOR*animFactor; netBottomY+=hoop.netHeight*NET_PULL_Y_FACTOR*animFactor; } const netBottomLeftX=hoopLeftRimX+netBottomPullX; const netBottomRightX=hoopRightRimX-netBottomPullX; ctx.beginPath(); ctx.moveTo(hoopLeftRimX,hoopBottomY); ctx.lineTo(netBottomLeftX,netBottomY); ctx.lineTo(netBottomRightX,netBottomY); ctx.lineTo(hoopRightRimX,hoopBottomY); ctx.strokeStyle=hoop.netColor; ctx.lineWidth=2; ctx.stroke(); for(let i=0.2; i<0.81; i+=0.2){ const bottomX=netBottomLeftX+(netBottomRightX-netBottomLeftX)*(i/0.6-(0.2/0.6)); ctx.moveTo(hoopLeftRimX+hoop.width*i,hoopBottomY); ctx.lineTo(bottomX,netBottomY); ctx.stroke(); } ctx.fillStyle=hoop.rimColor; ctx.fillRect(hoopLeftRimX-hoop.rimThickness/2,hoopTopY,hoop.width+hoop.rimThickness,hoop.rimThickness); ctx.strokeStyle='#a00'; ctx.lineWidth=1; ctx.strokeRect(hoopLeftRimX-hoop.rimThickness/2,hoopTopY,hoop.width+hoop.rimThickness,hoop.rimThickness); }
+function draw() { clearCanvas(); drawCourt(); drawHoop(); drawBall(); }
 
 // --- Timer ---
-function startTimer() {
-    if (timerInterval) clearInterval(timerInterval);
-    timeLeft = GAME_TIME_LIMIT;
-    timerDisplay.textContent = `Time: ${timeLeft}`;
-    timerInterval = setInterval(() => {
-        timeLeft--;
-        timerDisplay.textContent = `Time: ${timeLeft}`;
-        if (timeLeft <= 0 && gameState === 'playing') {
-            endGame();
-        }
-    }, 1000);
-}
+// (Keep startTimer function as is)
+function startTimer() { if (timerInterval) clearInterval(timerInterval); timeLeft = GAME_TIME_LIMIT; timerDisplay.textContent = `Time: ${timeLeft}`; timerInterval = setInterval(() => { timeLeft--; timerDisplay.textContent = `Time: ${timeLeft}`; if (timeLeft <= 0 && gameState === 'playing') { endGame(); } }, 1000); }
 
 // --- Game State Control ---
+// (Keep startGame and endGame functions largely as is, just ensure flags are reset)
 function startGame() {
     if (gameState === 'playing') return;
+    // resetGame(); // Called by button click now
     gameState = 'playing';
     startButton.style.display = 'none';
     startButton.disabled = true;
@@ -457,9 +382,10 @@ function startGame() {
     canScore = true;
     hitRimOrBackboard = false;
     isNetAnimating = false;
+    justClicked = false; // Reset flag
 
     startTimer();
-    lastTime = performance.now(); // Reset lastTime for deltaTime
+    lastTime = performance.now();
     requestAnimationFrame(gameLoop);
 }
 
@@ -468,9 +394,9 @@ function endGame() {
     gameState = 'gameOver';
     clearInterval(timerInterval);
     timerInterval = null;
-    isMouseDown = false;
+    // isMouseDown = false; // REMOVED
+    justClicked = false; // Ensure click flag is off
     finalScoreDisplay.textContent = `Final Score: ${score}`;
-    // messageOverlay display handled in gameLoop
     restartButton.style.display = 'block';
 }
 
@@ -478,22 +404,26 @@ function endGame() {
 function handleInteractionStart(event) {
     event.preventDefault();
     if (gameState === 'playing') {
-         isMouseDown = true;
+         // Set the flag only, force applied in update loop
+         justClicked = true;
      }
 }
 
+// We don't need to do anything on interaction end for the tap mechanic
 function handleInteractionEnd(event) {
      event.preventDefault();
-     isMouseDown = false;
+     // No action needed here now
+     // isMouseDown = false; // REMOVED
 }
 
+// (Keep event listener assignments as they are)
 canvas.addEventListener('mousedown', handleInteractionStart);
-canvas.addEventListener('mouseup', handleInteractionEnd);
-canvas.addEventListener('mouseleave', handleInteractionEnd);
+canvas.addEventListener('mouseup', handleInteractionEnd); // Keep listener, though function is empty
+canvas.addEventListener('mouseleave', handleInteractionEnd); // Keep listener, though function is empty
 
 canvas.addEventListener('touchstart', handleInteractionStart, { passive: false });
-canvas.addEventListener('touchend', handleInteractionEnd);
-canvas.addEventListener('touchcancel', handleInteractionEnd);
+canvas.addEventListener('touchend', handleInteractionEnd); // Keep listener
+canvas.addEventListener('touchcancel', handleInteractionEnd); // Keep listener
 
 startButton.addEventListener('click', () => {
     resetGame();
@@ -506,7 +436,4 @@ restartButton.addEventListener('click', () => {
 });
 
 // --- Initial Setup ---
-// Make sure the DOM is ready before initializing
-// Since the script is at the end of the body, we can just call initGame directly.
-// If the script was in the <head>, we'd wrap this in a DOMContentLoaded listener.
 initGame();
