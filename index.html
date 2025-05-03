@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HTML5 Bouncy Basketball</title>
+    <title>HTML5 Bouncy Basketball Enhanced</title>
     <style>
         body {
             display: flex;
@@ -105,20 +105,26 @@
 
         // Physics Constants
         const GRAVITY = 0.4;
-        const PUSH_FORCE = -9; // Negative for upward force
-        const HORIZONTAL_DAMPING = 0.99; // Slows down horizontal speed
-        const BOUNCE_FACTOR_GROUND = 0.6; // Energy lost on ground bounce
+        const PUSH_FORCE = -9.5; // Slightly stronger push
+        const HORIZONTAL_DAMPING = 0.995; // Less damping for more drift
+        const BOUNCE_FACTOR_GROUND = 0.6;
         const BOUNCE_FACTOR_WALL = 0.8;
-        const BOUNCE_FACTOR_RIM = 0.75;
-        const BOUNCE_FACTOR_BACKBOARD = 0.85;
+        const BOUNCE_FACTOR_RIM = 0.7; // Reduced bounce, more spin transfer
+        const BOUNCE_FACTOR_BACKBOARD = 0.8;
+        const ANGULAR_DAMPING = 0.98; // How quickly spin slows down naturally
+        const SPIN_ON_RIM_HIT = 0.15; // Radians/frame imparted on rim hit (adjust!)
+        const SPIN_EFFECT_ON_BOUNCE = 0.1; // How much spin affects horizontal velocity on bounce
+        const SPIN_DAMPING_ON_BOUNCE = 0.85; // How much spin reduces on impact
 
         // Ball Properties
         let ball = {
             x: GAME_WIDTH / 4,
             y: GAME_HEIGHT / 2,
             radius: 15,
-            vx: 5, // Initial horizontal velocity
+            vx: 4, // Initial horizontal velocity
             vy: 0,
+            angle: 0, // Rotation angle in radians
+            angularVelocity: 0, // Spin speed in radians per frame (effectively)
             color: '#ff8c00' // Orange
         };
 
@@ -134,8 +140,8 @@
             backboardWidth: 10,
             backboardHeight: 70,
             backboardColor: '#ffffffcc', // Semi-transparent white
-            vx: 1.5, // Horizontal speed for moving hoop
-            scoreZoneHeight: 10 // A thin line inside the hoop to detect score
+            vx: 1.8, // Slightly faster moving hoop
+            scoreZoneHeight: 10
         };
 
         // Game State
@@ -144,8 +150,15 @@
         let timerInterval = null;
         let gameState = 'start'; // 'start', 'playing', 'gameOver'
         let isMouseDown = false;
-        let canScore = true; // Prevents multiple scores for one pass
-        let hitRim = false; // Used for swish detection
+        let canScore = true;
+        let hitRimOrBackboard = false; // Used for swish detection
+
+        // Net Animation State
+        let isNetAnimating = false;
+        let netAnimationProgress = 0; // 0 to 1
+        const NET_ANIMATION_DURATION = 15; // Frames for animation (approx 0.25s at 60fps)
+        const NET_PULL_X_FACTOR = 0.15; // How much net pulls inwards horizontally
+        const NET_PULL_Y_FACTOR = 0.2; // How much net pulls downwards
 
         // --- Initialization ---
         function initGame() {
@@ -153,7 +166,6 @@
             canvas.height = GAME_HEIGHT;
             gameContainer.style.width = `${GAME_WIDTH}px`;
             gameContainer.style.height = `${GAME_HEIGHT}px`;
-
             resetGame();
         }
 
@@ -163,15 +175,19 @@
             gameState = 'start';
             isMouseDown = false;
             canScore = true;
-            hitRim = false;
+            hitRimOrBackboard = false;
+            isNetAnimating = false;
+            netAnimationProgress = 0;
 
             ball.x = GAME_WIDTH / 4;
             ball.y = GAME_HEIGHT / 2;
-            ball.vx = 5;
+            ball.vx = 4 + Math.random() * 2; // Slight random initial vx
             ball.vy = 0;
+            ball.angle = 0;
+            ball.angularVelocity = (Math.random() - 0.5) * 0.1; // Tiny random initial spin
 
-            hoop.x = GAME_WIDTH * 0.75; // Reset hoop position
-            hoop.vx = Math.abs(hoop.vx) * (Math.random() > 0.5 ? 1 : -1); // Randomize initial direction
+            hoop.x = GAME_WIDTH * 0.75;
+            hoop.vx = Math.abs(hoop.vx) * (Math.random() > 0.5 ? 1 : -1);
 
             scoreDisplay.textContent = `Score: ${score}`;
             timerDisplay.textContent = `Time: ${timeLeft}`;
@@ -184,7 +200,6 @@
                 clearInterval(timerInterval);
                 timerInterval = null;
             }
-             // Reset visual elements if needed
             clearCanvas();
             drawCourt();
             drawHoop();
@@ -194,21 +209,24 @@
         // --- Game Loop ---
         let lastTime = 0;
         function gameLoop(timestamp) {
-            if (gameState !== 'playing') {
-                 // Allow drawing even when not playing for the start/end screen
+            if (!lastTime) lastTime = timestamp; // Initialize lastTime on first frame
+            const deltaTime = (timestamp - lastTime) / (1000 / 60); // Normalize to 60 FPS baseline (deltaTime ≈ 1)
+            lastTime = timestamp;
+
+             if (gameState !== 'playing') {
+                 // Keep drawing static elements when not playing
                  clearCanvas();
                  drawCourt();
-                 drawHoop(); // Keep hoop visible
-                 drawBall(); // Keep ball visible
+                 drawHoop(); // Keep drawing hoop with potential animation ending
+                 drawBall(); // Keep drawing ball in its final position
+                 if(isNetAnimating) updateNetAnimation(deltaTime); // Let net animation finish
                  if(gameState === 'gameOver') {
                      messageOverlay.style.display = 'block';
                  }
-                 requestAnimationFrame(gameLoop); // Keep requesting frames to show static scene
+                 requestAnimationFrame(gameLoop);
                  return;
-            }
+             }
 
-            const deltaTime = (timestamp - lastTime) / 16.667; // Normalize to 60 FPS baseline
-            lastTime = timestamp;
 
             update(deltaTime);
             draw();
@@ -221,7 +239,7 @@
             // Apply Input Force
             if (isMouseDown) {
                 ball.vy = PUSH_FORCE;
-                // isMouseDown = false; // Uncomment for tap-only, comment for hold-to-float
+                 // Optional: Add slight spin on click based on where ball is relative to center? (Could be complex)
             }
 
             // Apply Gravity
@@ -231,115 +249,170 @@
             ball.x += ball.vx * deltaTime;
             ball.y += ball.vy * deltaTime;
 
-            // Apply Horizontal Damping
-            ball.vx *= Math.pow(HORIZONTAL_DAMPING, deltaTime); // Apply damping based on deltaTime
+            // Update Angle based on Angular Velocity
+            ball.angle += ball.angularVelocity * deltaTime;
+            // Keep angle reasonable (optional, mainly for display)
+            // ball.angle %= (Math.PI * 2);
+
+            // Apply Damping
+            ball.vx *= Math.pow(HORIZONTAL_DAMPING, deltaTime);
+            ball.angularVelocity *= Math.pow(ANGULAR_DAMPING, deltaTime);
+
 
             // Update Hoop Position
             hoop.x += hoop.vx * deltaTime;
-            if (hoop.x + hoop.width / 2 > GAME_WIDTH || hoop.x - hoop.width / 2 < 0) {
-                hoop.vx *= -1; // Bounce hoop off walls
+            if (hoop.x + hoop.width / 2 > GAME_WIDTH - hoop.backboardWidth || hoop.x - hoop.width / 2 < 0) { // Adjust boundary for backboard
+                hoop.vx *= -1;
                 hoop.x += hoop.vx * deltaTime; // Prevent sticking
             }
 
+             // Update Net Animation
+            if (isNetAnimating) {
+                updateNetAnimation(deltaTime);
+            }
 
-            // Collision Detection
-            handleCollisions();
+
+            // Collision Detection (Reset hit flag before checking)
+            hitRimOrBackboard = false;
+            handleCollisions(deltaTime);
 
             // Scoring Check
-            checkScoring();
+            checkScoring(); // Pass hitRimOrBackboard status
         }
 
+         function updateNetAnimation(deltaTime) {
+             netAnimationProgress += deltaTime / NET_ANIMATION_DURATION;
+             if (netAnimationProgress >= 1) {
+                 isNetAnimating = false;
+                 netAnimationProgress = 0;
+             }
+         }
+
         // --- Collision Handling ---
-        function handleCollisions() {
-             hitRim = false; // Reset rim hit for swish detection each frame
+        function handleCollisions(deltaTime) {
             // Ground Collision
             if (ball.y + ball.radius > GAME_HEIGHT) {
                 ball.y = GAME_HEIGHT - ball.radius;
+                const incomingVy = ball.vy;
                 ball.vy *= -BOUNCE_FACTOR_GROUND;
-                 ball.vx *= BOUNCE_FACTOR_GROUND; // Damp horizontal on ground hit
-                canScore = true; // Allow scoring again after hitting ground
+                // Apply spin effect: Positive spin (topspin) increases vx, negative (backspin) decreases vx
+                ball.vx += ball.angularVelocity * SPIN_EFFECT_ON_BOUNCE * Math.abs(incomingVy) * deltaTime; // Effect scales with impact speed
+                ball.angularVelocity *= SPIN_DAMPING_ON_BOUNCE;
+                ball.vx *= BOUNCE_FACTOR_GROUND; // Damp horizontal too
+                canScore = true;
             }
 
-            // Ceiling Collision (less common, but good practice)
+            // Ceiling Collision
             if (ball.y - ball.radius < 0) {
                 ball.y = ball.radius;
-                ball.vy *= -BOUNCE_FACTOR_WALL; // Use wall bounce factor
+                 const incomingVy = ball.vy;
+                ball.vy *= -BOUNCE_FACTOR_WALL;
+                 ball.vx += ball.angularVelocity * SPIN_EFFECT_ON_BOUNCE * Math.abs(incomingVy) * deltaTime;
+                ball.angularVelocity *= SPIN_DAMPING_ON_BOUNCE;
                 canScore = true;
             }
 
             // Wall Collisions
-            if (ball.x + ball.radius > GAME_WIDTH) {
-                ball.x = GAME_WIDTH - ball.radius;
+            if (ball.x + ball.radius > GAME_WIDTH || ball.x - ball.radius < 0) {
+                const hitRightWall = ball.x + ball.radius > GAME_WIDTH;
+                ball.x = hitRightWall ? GAME_WIDTH - ball.radius : ball.radius;
+                const incomingVx = ball.vx;
                 ball.vx *= -BOUNCE_FACTOR_WALL;
-            }
-            if (ball.x - ball.radius < 0) {
-                ball.x = ball.radius;
-                ball.vx *= -BOUNCE_FACTOR_WALL;
+                // Spin effect on vertical velocity (less intuitive, but for consistency)
+                 // ball.vy -= ball.angularVelocity * SPIN_EFFECT_ON_BOUNCE * 0.1 * Math.abs(incomingVx) * deltaTime; // Less pronounced effect
+                 ball.angularVelocity *= SPIN_DAMPING_ON_BOUNCE; // Damp spin on wall hits too
             }
 
-            // Hoop Collisions
-            const hoopTopY = hoop.y;
-            const hoopBottomY = hoop.y + hoop.rimThickness;
-            const hoopLeftRimX = hoop.x - hoop.width / 2;
-            const hoopRightRimX = hoop.x + hoop.width / 2;
-            const backboardLeftX = hoopRightRimX;
-            const backboardRightX = backboardLeftX + hoop.backboardWidth;
-            const backboardTopY = hoop.y - hoop.backboardHeight / 2 + hoop.rimThickness / 2;
-            const backboardBottomY = hoop.y + hoop.backboardHeight / 2 + hoop.rimThickness / 2;
 
-            // 1. Backboard Collision (Simple Rectangle Check)
-            if (ball.x + ball.radius > backboardLeftX &&
-                ball.x - ball.radius < backboardRightX &&
-                ball.y > backboardTopY &&
-                ball.y < backboardBottomY) {
-                // Check which side it hit more closely
-                 if (ball.x < backboardRightX && ball.vx > 0) { // Hit from left
-                      ball.x = backboardLeftX - ball.radius;
-                      ball.vx *= -BOUNCE_FACTOR_BACKBOARD;
-                      hitRim = true; // Count backboard as rim hit for swish
+             // Hoop Collisions
+             const hoopTopY = hoop.y;
+             const hoopBottomY = hoop.y + hoop.rimThickness;
+             const hoopCenterX = hoop.x;
+             const hoopLeftRimX = hoop.x - hoop.width / 2;
+             const hoopRightRimX = hoop.x + hoop.width / 2;
+             const backboardLeftX = hoopRightRimX; // Backboard is attached to the right rim
+             const backboardRightX = backboardLeftX + hoop.backboardWidth;
+             const backboardTopY = hoop.y - hoop.backboardHeight / 2 + hoop.rimThickness / 2;
+             const backboardBottomY = hoop.y + hoop.backboardHeight / 2 + hoop.rimThickness / 2;
+
+
+            // 1. Backboard Collision
+            if (ball.x + ball.radius > backboardLeftX && // Ball's right edge passed backboard left
+                ball.x - ball.radius < backboardRightX && // Ball's left edge before backboard right
+                ball.y + ball.radius > backboardTopY && // Ball's bottom below backboard top
+                ball.y - ball.radius < backboardBottomY) // Ball's top above backboard bottom
+            {
+                // Check if the ball was moving towards the backboard primarily horizontally
+                 if (ball.vx > 0 && ball.x < backboardRightX ) {
+                     hitRimOrBackboard = true; // Count as hit
+                     canScore = true; // Allow scoring after backboard hit
+
+                     ball.x = backboardLeftX - ball.radius; // Reposition
+                     const impactRatio = (ball.y - backboardTopY) / hoop.backboardHeight; // 0 to 1, where it hit vertically
+
+                     // Bounce
+                     ball.vx *= -BOUNCE_FACTOR_BACKBOARD;
+
+                     // Add spin based on vertical hit position (higher hits add more backspin)
+                     ball.angularVelocity -= (impactRatio - 0.5) * SPIN_ON_RIM_HIT * 1.5 * deltaTime; // Add some spin
+
+                     // Dampen existing spin slightly
+                     ball.angularVelocity *= SPIN_DAMPING_ON_BOUNCE * 0.95;
                  }
-                 // Add collision from top/bottom if needed, but less common
             }
 
+             // 2. Rim Collision
+             const checkRimCollision = (rimX) => {
+                 // Simple check: ball center horizontally close to rim edge?
+                 if (Math.abs(ball.x - rimX) < ball.radius + hoop.rimThickness) {
+                     // Ball vertically overlapping the rim?
+                     if (ball.y > hoopTopY - ball.radius && ball.y < hoopBottomY + ball.radius) {
+                          // More precise circle-rectangle intersection (approximation)
+                          // Check distance from ball center to the closest point on the rim's top surface rectangle
+                         const closestX = Math.max(rimX - hoop.rimThickness / 2, Math.min(ball.x, rimX + hoop.rimThickness / 2));
+                         const closestY = Math.max(hoopTopY, Math.min(ball.y, hoopBottomY));
+                         const dx = ball.x - closestX;
+                         const dy = ball.y - closestY;
 
-            // 2. Rim Collision (Simplified: treat as horizontal lines/points)
-            const checkRimCollision = (rimX) => {
-                // Check intersection with the vertical plane of the rim edge
-                if (Math.abs(ball.x - rimX) < ball.radius + hoop.rimThickness / 2) {
-                    // Check if ball is vertically aligned with the rim
-                    if (ball.y > hoopTopY - ball.radius && ball.y < hoopBottomY + ball.radius) {
-                        // More precise check: distance from center to rim corner point
-                        const distSq = (ball.x - rimX)**2 + (ball.y - (hoopTopY + hoop.rimThickness / 2))**2;
-                        const radiiSq = (ball.radius)**2; // Treat rim corner as point
+                         if ((dx * dx + dy * dy) < (ball.radius * ball.radius)) {
+                             hitRimOrBackboard = true;
+                             canScore = true;
 
-                        if (distSq < radiiSq * 1.5) { // Allow slightly wider collision check
-                             hitRim = true; // It hit the rim
-                             canScore = true; // Allow scoring chance after rim bounce
+                             const incomingVy = ball.vy;
 
-                            // Simple vertical bounce reaction
-                             if (ball.y < hoopTopY + hoop.rimThickness / 2) { // Hit from top
+                             // Basic Vertical Bounce (if hitting top)
+                             if (ball.y < hoopTopY + hoop.rimThickness) { // Hit rim from above
                                  ball.vy *= -BOUNCE_FACTOR_RIM;
-                                 ball.y = hoopTopY - ball.radius; // Reposition slightly above
-                             } else { // Hit from side/below (less likely needed physics)
-                                 ball.vx *= -BOUNCE_FACTOR_RIM * 0.8; // Also affect horizontal slightly
-                                 // Push ball slightly away horizontally based on which rim
-                                 ball.x += (ball.x > hoop.x ? 1 : -1) * 2;
-                                 // Add slight upward nudge if hit from below rim
-                                 if(ball.vy > 0) ball.vy *= -0.2;
+                                 ball.y = hoopTopY - ball.radius; // Reposition slightly
+                             } else { // Hit from side/below (less common physics)
+                                 ball.vx *= -BOUNCE_FACTOR_RIM * 0.7;
+                                 ball.x += (ball.x > hoopCenterX ? 1 : -1) * 2; // Push away slightly
+                                  if(ball.vy > 0) ball.vy *= -0.1; // Slight upward nudge if hit from below
                              }
-                             // Prevent sticking
-                             ball.vy += (Math.random() - 0.5) * 2; // Tiny random nudge
-                             return true; // Collision happened
-                        }
-                    }
-                }
-                return false; // No collision
-            };
 
-            checkRimCollision(hoopLeftRimX);
-            checkRimCollision(hoopRightRimX);
+                             // --- Add Spin based on horizontal position relative to hoop center ---
+                             const hitOffset = (ball.x - rimX); // How far from the exact rim edge center
+                             const spinDirection = (rimX < hoopCenterX) ? 1 : -1; // Left rim adds clockwise(+), right rim adds counter-clockwise(-) for typical shots
+                             ball.angularVelocity += spinDirection * SPIN_ON_RIM_HIT * (1 - Math.abs(hitOffset) / ball.radius) * deltaTime; // More spin if hit closer to center of ball contact
+
+                             // Apply spin effect to horizontal velocity AFTER bounce calc
+                             ball.vx += ball.angularVelocity * SPIN_EFFECT_ON_BOUNCE * Math.abs(incomingVy) * 0.5 * deltaTime; // Spin affects bounce off rim too
+
+                              // Dampen spin slightly more on rim hits
+                             ball.angularVelocity *= SPIN_DAMPING_ON_BOUNCE * 0.9;
+
+                             return true; // Collision happened
+                         }
+                     }
+                 }
+                 return false; // No collision
+             };
+
+             checkRimCollision(hoopLeftRimX);
+             checkRimCollision(hoopRightRimX);
 
         }
+
 
         // --- Scoring Logic ---
         function checkScoring() {
@@ -348,24 +421,19 @@
             const hoopLeftRimX = hoop.x - hoop.width / 2;
             const hoopRightRimX = hoop.x + hoop.width / 2;
 
-            // Condition: Ball must be moving downwards (vy > 0)
-            // Condition: Ball's center must cross the hoop's score zone line
-            // Condition: Ball must be within the horizontal bounds of the hoop
-            // Condition: Scoring must be enabled (canScore flag)
-
             if (canScore && ball.vy > 0 &&
                 ball.y - ball.radius < hoopBottomY && // Check top edge hasn't passed bottom zone yet
                 ball.y + ball.radius > hoopTopY && // Check bottom edge has passed top of rim
                 ball.x > hoopLeftRimX && ball.x < hoopRightRimX)
             {
-                 // Check if ball's center passed the critical scoring line (top of rim) in this frame
-                 const prevY = ball.y - ball.vy; // Approximate previous position
+                 const prevY = ball.y - ball.vy * deltaTime; // Approximate previous position based on delta
                  if (prevY <= hoopTopY + hoop.rimThickness / 2) {
-                     score += hitRim ? 2 : 3; // 3 points for a "swish" (no rim/backboard hit)
+                     const points = hitRimOrBackboard ? 2 : 3; // Use the flag set during collision checks this frame
+                     score += points;
                      scoreDisplay.textContent = `Score: ${score}`;
-                     canScore = false; // Prevent scoring again until ball goes way above or hits ground
-                     // Add visual/audio feedback here later (e.g., net animation, sound)
-                     console.log(hitRim ? "Score! (2 points)" : "Swish! (3 points)");
+                     canScore = false; // Prevent scoring again immediately
+                     triggerNetAnimation(); // Start the net animation
+                     console.log(hitRimOrBackboard ? "Score! (2 points)" : "Swish! (3 points)");
                  }
             }
 
@@ -375,6 +443,11 @@
             }
         }
 
+        function triggerNetAnimation() {
+             isNetAnimating = true;
+             netAnimationProgress = 0;
+         }
+
 
         // --- Drawing ---
         function clearCanvas() {
@@ -382,44 +455,48 @@
         }
 
         function drawCourt() {
-            // Simple gradient background within the container is handled by CSS
-            // Optional: Draw court lines if desired
-            ctx.fillStyle = '#d2b48c'; // Tan color for a potential court area
-            ctx.fillRect(0, GAME_HEIGHT - 20, GAME_WIDTH, 20); // Floor/Ground
+            ctx.fillStyle = '#d2b48c'; // Tan floor
+            ctx.fillRect(0, GAME_HEIGHT - 20, GAME_WIDTH, 20);
         }
 
         function drawBall() {
+            ctx.save(); // Save context state before rotation/translation
+
+            // Translate context to ball center and rotate
+            ctx.translate(ball.x, ball.y);
+            ctx.rotate(ball.angle);
+            ctx.translate(-ball.x, -ball.y); // Translate back
+
+            // Draw the ball centered at (ball.x, ball.y) - rotation is applied
             ctx.beginPath();
             ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
             ctx.fillStyle = ball.color;
             ctx.fill();
-            ctx.strokeStyle = '#000'; // Black outline
+            ctx.strokeStyle = '#000';
             ctx.lineWidth = 1;
             ctx.stroke();
             ctx.closePath();
 
-             // Simple basketball lines (optional)
+             // Draw rotating lines
              ctx.beginPath();
+              // Vertical Line (relative to rotated context)
              ctx.moveTo(ball.x, ball.y - ball.radius);
              ctx.lineTo(ball.x, ball.y + ball.radius);
+              // Horizontal Line (relative to rotated context)
              ctx.moveTo(ball.x - ball.radius, ball.y);
              ctx.lineTo(ball.x + ball.radius, ball.y);
+              // Curved Lines (remain fixed relative to the ball's rotation)
              ctx.moveTo(ball.x - ball.radius * 0.7, ball.y - ball.radius * 0.7);
-             ctx.bezierCurveTo(
-                 ball.x - ball.radius * 0.3, ball.y + ball.radius * 0.1, // Control point 1
-                 ball.x + ball.radius * 0.3, ball.y + ball.radius * 0.1, // Control point 2
-                 ball.x + ball.radius * 0.7, ball.y - ball.radius * 0.7  // End point
-             );
+             ctx.bezierCurveTo(ball.x - ball.radius * 0.3, ball.y + ball.radius * 0.1, ball.x + ball.radius * 0.3, ball.y + ball.radius * 0.1, ball.x + ball.radius * 0.7, ball.y - ball.radius * 0.7);
              ctx.moveTo(ball.x - ball.radius * 0.7, ball.y + ball.radius * 0.7);
-              ctx.bezierCurveTo(
-                 ball.x - ball.radius * 0.3, ball.y - ball.radius * 0.1, // Control point 1
-                 ball.x + ball.radius * 0.3, ball.y - ball.radius * 0.1, // Control point 2
-                 ball.x + ball.radius * 0.7, ball.y + ball.radius * 0.7  // End point
-             );
+             ctx.bezierCurveTo(ball.x - ball.radius * 0.3, ball.y - ball.radius * 0.1, ball.x + ball.radius * 0.3, ball.y - ball.radius * 0.1, ball.x + ball.radius * 0.7, ball.y + ball.radius * 0.7);
+
              ctx.strokeStyle = '#00000088'; // Dark semi-transparent lines
              ctx.lineWidth = 1;
              ctx.stroke();
              ctx.closePath();
+
+            ctx.restore(); // Restore context state
         }
 
         function drawHoop() {
@@ -433,23 +510,40 @@
             const backboardTopY = hoop.y - hoop.backboardHeight / 2 + hoop.rimThickness / 2;
              ctx.fillStyle = hoop.backboardColor;
              ctx.fillRect(backboardLeftX, backboardTopY, hoop.backboardWidth, hoop.backboardHeight);
-             ctx.strokeStyle = '#999'; // Outline for backboard
+             ctx.strokeStyle = '#999';
              ctx.strokeRect(backboardLeftX, backboardTopY, hoop.backboardWidth, hoop.backboardHeight);
 
 
-            // Net (drawn behind rim)
+            // --- Net Drawing (with Animation) ---
+            let netBottomY = hoopBottomY + hoop.netHeight;
+            let netBottomPullX = hoop.width * 0.2; // Default narrowing
+
+            if (isNetAnimating) {
+                // Simple animation: Pull inwards and slightly down, then return
+                // Using a sine wave for smooth in/out: sin(progress * PI) goes 0 -> 1 -> 0
+                const animFactor = Math.sin(netAnimationProgress * Math.PI);
+                netBottomPullX += hoop.width * NET_PULL_X_FACTOR * animFactor; // Pull further inwards
+                netBottomY += hoop.netHeight * NET_PULL_Y_FACTOR * animFactor; // Pull slightly down
+            }
+
+            const netBottomLeftX = hoopLeftRimX + netBottomPullX;
+            const netBottomRightX = hoopRightRimX - netBottomPullX;
+
             ctx.beginPath();
             ctx.moveTo(hoopLeftRimX, hoopBottomY);
-            ctx.lineTo(hoopLeftRimX + hoop.width * 0.2, hoopBottomY + hoop.netHeight);
-            ctx.lineTo(hoopRightRimX - hoop.width * 0.2, hoopBottomY + hoop.netHeight);
+            ctx.lineTo(netBottomLeftX, netBottomY);
+            ctx.lineTo(netBottomRightX, netBottomY);
             ctx.lineTo(hoopRightRimX, hoopBottomY);
             ctx.strokeStyle = hoop.netColor;
             ctx.lineWidth = 2;
             ctx.stroke();
-             // Add a few vertical net lines
-             for(let i=0.2; i<0.8; i+=0.2) {
+
+             // Vertical net lines adjusting to animation
+             for(let i = 0.2; i < 0.81; i += 0.2) { // Loop includes 0.8 slightly better
+                  // Interpolate the bottom x position for the vertical line
+                 const bottomX = netBottomLeftX + (netBottomRightX - netBottomLeftX) * (i / 0.6 - (0.2 / 0.6)); // Map i from [0.2, 0.8] range to [0, 1] range for interpolation
                  ctx.moveTo(hoopLeftRimX + hoop.width * i, hoopBottomY);
-                 ctx.lineTo(hoopLeftRimX + hoop.width * 0.2 + (hoop.width*0.6 * i) , hoopBottomY + hoop.netHeight);
+                 ctx.lineTo(bottomX, netBottomY);
                  ctx.stroke();
              }
 
@@ -457,36 +551,29 @@
             // Rim (drawn on top)
             ctx.fillStyle = hoop.rimColor;
             ctx.fillRect(hoopLeftRimX - hoop.rimThickness / 2, hoopTopY, hoop.width + hoop.rimThickness, hoop.rimThickness);
-             ctx.strokeStyle = '#a00'; // Darker outline for rim
+             ctx.strokeStyle = '#a00';
              ctx.lineWidth = 1;
              ctx.strokeRect(hoopLeftRimX - hoop.rimThickness / 2, hoopTopY, hoop.width + hoop.rimThickness, hoop.rimThickness);
-
-
-            // Optional: Draw score zone for debugging
-            // ctx.strokeStyle = 'rgba(0, 255, 0, 0.5)';
-            // ctx.lineWidth = 1;
-            // ctx.strokeRect(hoopLeftRimX, hoopTopY, hoop.width, hoop.scoreZoneHeight);
         }
 
 
         function draw() {
             clearCanvas();
             drawCourt();
+            // Draw hoop first so ball is on top, but net animation needs to be calculated based on state
             drawHoop();
             drawBall();
-            // UI elements (score/timer) are HTML overlays, no need to draw here
         }
 
         // --- Timer ---
         function startTimer() {
-            if (timerInterval) clearInterval(timerInterval); // Clear any existing timer
-
+            if (timerInterval) clearInterval(timerInterval);
             timeLeft = GAME_TIME_LIMIT;
             timerDisplay.textContent = `Time: ${timeLeft}`;
             timerInterval = setInterval(() => {
                 timeLeft--;
                 timerDisplay.textContent = `Time: ${timeLeft}`;
-                if (timeLeft <= 0) {
+                if (timeLeft <= 0 && gameState === 'playing') { // Check gameState to prevent multiple calls
                     endGame();
                 }
             }, 1000);
@@ -495,37 +582,40 @@
         // --- Game State Control ---
         function startGame() {
             if (gameState === 'playing') return;
+            // Reset ensures clean state, might be redundant if called by button always
+            // resetGame();
             gameState = 'playing';
             startButton.style.display = 'none';
             startButton.disabled = true;
             restartButton.style.display = 'none';
             messageOverlay.style.display = 'none';
-            canScore = true; // Ensure scoring is enabled at start
+            canScore = true;
+            hitRimOrBackboard = false; // Ensure reset before game starts
+            isNetAnimating = false; // Ensure net isn't stuck animating
+
 
             startTimer();
-            lastTime = performance.now(); // Initialize lastTime for deltaTime calculation
+            lastTime = performance.now(); // Reset lastTime for deltaTime
             requestAnimationFrame(gameLoop);
         }
 
         function endGame() {
+             if (gameState !== 'playing') return; // Prevent running multiple times
             gameState = 'gameOver';
             clearInterval(timerInterval);
             timerInterval = null;
+            isMouseDown = false; // Ensure input stops on game over
             finalScoreDisplay.textContent = `Final Score: ${score}`;
-            messageOverlay.style.display = 'block';
+            // messageOverlay.style.display = 'block'; // Display handled in gameLoop now
             restartButton.style.display = 'block';
-            // Ball might continue moving based on current physics until loop stops updating
         }
 
         // --- Event Listeners ---
-        function handleInteractionStart(event) {
-            event.preventDefault(); // Prevent default behaviors like text selection or zoom
+         function handleInteractionStart(event) {
+            event.preventDefault();
             if (gameState === 'playing') {
                  isMouseDown = true;
-             } else if (gameState === 'start') {
-                 // Allow clicking anywhere to start if desired, or rely on button
-                 // startGame();
-            }
+             }
         }
 
         function handleInteractionEnd(event) {
@@ -533,18 +623,17 @@
              isMouseDown = false;
         }
 
-        // Use both mouse and touch events
         canvas.addEventListener('mousedown', handleInteractionStart);
         canvas.addEventListener('mouseup', handleInteractionEnd);
-        canvas.addEventListener('mouseleave', handleInteractionEnd); // Stop pushing if mouse leaves canvas
+        canvas.addEventListener('mouseleave', handleInteractionEnd);
 
-        canvas.addEventListener('touchstart', handleInteractionStart, { passive: false }); // passive: false to allow preventDefault
+        canvas.addEventListener('touchstart', handleInteractionStart, { passive: false });
         canvas.addEventListener('touchend', handleInteractionEnd);
         canvas.addEventListener('touchcancel', handleInteractionEnd);
 
 
         startButton.addEventListener('click', () => {
-            resetGame(); // Ensure clean state before starting
+            resetGame(); // Explicitly reset before starting
             startGame();
         });
 
